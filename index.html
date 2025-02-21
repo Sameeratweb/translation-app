@@ -1,0 +1,392 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neural Machine Translation</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <style>
+        .translation-area {
+            height: 200px;
+            resize: none;
+        }
+        .lang-select {
+            min-width: 140px;
+        }
+        .fade-in {
+            animation: fadeIn 0.5s;
+        }
+        @keyframes fadeIn {
+            0% { opacity: 0; }
+            100% { opacity: 1; }
+        }
+        .rotate-icon {
+            transition: transform 0.3s ease;
+        }
+        .rotate-icon:hover {
+            transform: rotate(180deg);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-6xl">
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-bold text-gray-800">Neural Machine Translation</h1>
+        </header>
+        
+        <main>
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex flex-col md:flex-row gap-4">
+                    <div class="flex-1">
+                        <div class="flex justify-between items-center mb-2">
+                            <select id="sourceLanguage" class="lang-select bg-gray-100 border border-gray-300 rounded-md px-3 py-2 text-sm">
+                                <option value="auto">Detect Language</option>
+                                {% for code, name in languages.items() %}
+                                <option value="{{ code }}">{{ name }}</option>
+                                {% endfor %}
+                            </select>
+                            <div id="charCount" class="text-sm text-gray-500">0/5000</div>
+                        </div>
+                        <textarea id="sourceText" class="translation-area w-full border rounded-md p-4 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            placeholder="Enter text to translate"></textarea>
+                    </div>
+                    
+                    <div class="flex items-center justify-center">
+                        <button id="swapButton" class="rotate-icon bg-gray-200 hover:bg-gray-300 rounded-full p-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                            </svg>
+                        </button>
+                    </div>
+                    
+                    <div class="flex-1">
+                        <div class="flex justify-between items-center mb-2">
+                            <select id="targetLanguage" class="lang-select bg-gray-100 border border-gray-300 rounded-md px-3 py-2 text-sm">
+                                {% for code, name in languages.items() %}
+                                <option value="{{ code }}" {% if code == 'en' %}selected{% endif %}>{{ name }}</option>
+                                {% endfor %}
+                            </select>
+                            <button id="copyButton" class="text-sm bg-gray-200 hover:bg-gray-300 px-3 py-1 rounded-md">
+                                Copy
+                            </button>
+                        </div>
+                        <textarea id="translatedText" readonly class="translation-area w-full border rounded-md p-4 bg-gray-50"
+                            placeholder="Translation will appear here"></textarea>
+                    </div>
+                </div>
+                
+                <div class="mt-4 flex flex-col sm:flex-row justify-between items-center">
+                    <div class="flex items-center space-x-4 mb-4 sm:mb-0">
+                        <div class="flex items-center">
+                            <input type="checkbox" id="autoTranslate" class="mr-2" checked>
+                            <label for="autoTranslate" class="text-sm text-gray-700">Auto-translate</label>
+                        </div>
+                        <select id="modelSize" class="bg-gray-100 border border-gray-300 rounded-md px-3 py-1 text-sm">
+                            <option value="fast">Fast (Smaller Model)</option>
+                            <option value="balanced" selected>Balanced</option>
+                            <option value="accurate">Accurate (Larger Model)</option>
+                        </select>
+                    </div>
+                    
+                    <div>
+                        <span id="status" class="text-sm text-gray-600 mr-3">Ready</span>
+                        <button id="translateButton" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md">
+                            Translate
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="mt-8 bg-white rounded-lg shadow-md p-6">
+                <h2 class="text-xl font-semibold text-gray-800 mb-4">Translation History</h2>
+                <div id="historyContainer" class="space-y-4">
+                    <p class="text-gray-500 italic text-center">Your translation history will appear here</p>
+                </div>
+            </div>
+        </main>
+        
+        <footer class="mt-12 text-center text-gray-600 text-sm">
+            <p class="mt-1">Running on {{ 'GPU' if device == 'cuda' else 'CPU' }} acceleration</p>
+        </footer>
+    </div>
+    
+    <script>
+        // DOM elements
+        const sourceText = document.getElementById('sourceText');
+        const translatedText = document.getElementById('translatedText');
+        const sourceLanguage = document.getElementById('sourceLanguage');
+        const targetLanguage = document.getElementById('targetLanguage');
+        const translateButton = document.getElementById('translateButton');
+        const copyButton = document.getElementById('copyButton');
+        const swapButton = document.getElementById('swapButton');
+        const charCount = document.getElementById('charCount');
+        const statusElement = document.getElementById('status');
+        const historyContainer = document.getElementById('historyContainer');
+        const autoTranslate = document.getElementById('autoTranslate');
+        const modelSize = document.getElementById('modelSize');
+        
+        // Variables
+        let translationTimeout;
+        let history = [];
+        const MAX_CHARS = 5000;
+        
+        // Update character count
+        function updateCharCount() {
+            const count = sourceText.value.length;
+            charCount.textContent = `${count}/${MAX_CHARS}`;
+            
+            if (count > MAX_CHARS) {
+                charCount.classList.add('text-red-500');
+                charCount.classList.remove('text-gray-500');
+            } else {
+                charCount.classList.remove('text-red-500');
+                charCount.classList.add('text-gray-500');
+            }
+        }
+        
+        // Detect language
+        async function detectLanguage(text) {
+            if (!text.trim()) return 'en';
+            
+            try {
+                const response = await fetch('/api/detect', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({text})
+                });
+                
+                if (!response.ok) throw new Error('Language detection failed');
+                
+                const data = await response.json();
+                return data.detected_lang;
+            } catch (error) {
+                console.error('Language detection error:', error);
+                return 'en';
+            }
+        }
+        
+        // Translate text
+        async function translateText() {
+            const text = sourceText.value.trim();
+            if (!text) {
+                translatedText.value = '';
+                statusElement.textContent = 'Ready';
+                return;
+            }
+            
+            if (text.length > MAX_CHARS) {
+                statusElement.textContent = `Exceeded ${MAX_CHARS} character limit`;
+                return;
+            }
+            
+            let source = sourceLanguage.value;
+            const target = targetLanguage.value;
+            const modelSizeValue = modelSize.value;
+            
+            statusElement.textContent = 'Translating...';
+            
+            try {
+                // If auto-detect is selected, get the language first
+                if (source === 'auto') {
+                    statusElement.textContent = 'Detecting language...';
+                    source = await detectLanguage(text);
+                    // Update select to show detected language
+                    for (let i = 0; i < sourceLanguage.options.length; i++) {
+                        if (sourceLanguage.options[i].value === source) {
+                            sourceLanguage.selectedIndex = i;
+                            break;
+                        }
+                    }
+                }
+                
+                // Skip translation if languages are the same
+                if (source === target) {
+                    translatedText.value = text;
+                    statusElement.textContent = 'Same language - no translation needed';
+                    return;
+                }
+                
+                const response = await fetch('/api/translate', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        text,
+                        source_lang: source,
+                        target_lang: target,
+                        model_size: modelSizeValue
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Translation failed');
+                }
+                
+                const data = await response.json();
+                translatedText.value = data.translated_text;
+                
+                // Update status with timing info
+                const time = data.processing_time.toFixed(2);
+                statusElement.textContent = `Translated in ${time}s`;
+                
+                // Add to history if substantial
+                if (text.length > 1 && data.translated_text.length > 1 && text !== data.translated_text) {
+                    addToHistory(
+                        source,
+                        target,
+                        text,
+                        data.translated_text,
+                        data.processing_time
+                    );
+                }
+            } catch (error) {
+                console.error('Translation error:', error);
+                statusElement.textContent = `Error: ${error.message}`;
+                translatedText.value = '';
+            }
+        }
+        
+        // Add to history
+        function addToHistory(source, target, sourceText, translatedText, time) {
+            const sourceLanguageName = sourceLanguage.options[
+                Array.from(sourceLanguage.options).findIndex(opt => opt.value === source)
+            ].text;
+            
+            const targetLanguageName = targetLanguage.options[
+                Array.from(targetLanguage.options).findIndex(opt => opt.value === target)
+            ].text;
+            
+            history.unshift({
+                source,
+                target,
+                sourceText,
+                translatedText,
+                sourceLanguageName,
+                targetLanguageName,
+                time,
+                timestamp: new Date()
+            });
+            
+            if (history.length > 5) history.pop(); // Keep only last 5 translations
+            renderHistory();
+        }
+        
+        // Render history
+        function renderHistory() {
+            if (history.length === 0) {
+                historyContainer.innerHTML = '<p class="text-gray-500 italic text-center">Your translation history will appear here</p>';
+                return;
+            }
+            
+            historyContainer.innerHTML = '';
+            
+            history.forEach(item => {
+                const historyItem = document.createElement('div');
+                historyItem.className = 'border rounded-md p-4 fade-in';
+                
+                const header = document.createElement('div');
+                header.className = 'flex justify-between items-center mb-3';
+                
+                const languageInfo = document.createElement('div');
+                languageInfo.className = 'text-sm font-medium';
+                languageInfo.innerHTML = `${item.sourceLanguageName} → ${item.targetLanguageName}`;
+                
+                const timeInfo = document.createElement('div');
+                timeInfo.className = 'text-xs text-gray-500';
+                timeInfo.textContent = `${formatTime(item.timestamp)} · ${item.time.toFixed(2)}s`;
+                
+                header.appendChild(languageInfo);
+                header.appendChild(timeInfo);
+                
+                const content = document.createElement('div');
+                content.className = 'grid grid-cols-1 md:grid-cols-2 gap-4';
+                
+                const sourceDiv = document.createElement('div');
+                sourceDiv.className = 'bg-gray-50 p-3 rounded text-sm';
+                sourceDiv.textContent = truncateText(item.sourceText, 150);
+                
+                const targetDiv = document.createElement('div');
+                targetDiv.className = 'bg-blue-50 p-3 rounded text-sm';
+                targetDiv.textContent = truncateText(item.translatedText, 150);
+                
+                content.appendChild(sourceDiv);
+                content.appendChild(targetDiv);
+                
+                historyItem.appendChild(header);
+                historyItem.appendChild(content);
+                historyContainer.appendChild(historyItem);
+            });
+        }
+        
+        // Helper function to truncate text
+        function truncateText(text, maxLength) {
+            if (text.length <= maxLength) return text;
+            return text.substring(0, maxLength) + '...';
+        }
+        
+        // Format time for history
+        function formatTime(date) {
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+        
+        // Event listeners
+        sourceText.addEventListener('input', function() {
+            updateCharCount();
+            
+            // Auto translate with delay
+            if (autoTranslate.checked) {
+                clearTimeout(translationTimeout);
+                if (this.value.trim()) {
+                    statusElement.textContent = 'Waiting to translate...';
+                    translationTimeout = setTimeout(translateText, 1000);
+                } else {
+                    translatedText.value = '';
+                    statusElement.textContent = 'Ready';
+                }
+            }
+        });
+        
+        translateButton.addEventListener('click', translateText);
+        
+        copyButton.addEventListener('click', function() {
+            if (!translatedText.value) return;
+            
+            translatedText.select();
+            document.execCommand('copy');
+            
+            const originalText = this.textContent;
+            this.textContent = 'Copied!';
+            setTimeout(() => { this.textContent = originalText; }, 1500);
+        });
+        
+        swapButton.addEventListener('click', function() {
+            // Don't swap if source is auto-detect
+            if (sourceLanguage.value === 'auto') return;
+            
+            // Swap languages
+            const tempLang = sourceLanguage.value;
+            sourceLanguage.value = targetLanguage.value;
+            targetLanguage.value = tempLang;
+            
+            // Swap text
+            const tempText = sourceText.value;
+            sourceText.value = translatedText.value;
+            translatedText.value = tempText;
+            
+            // Update character count
+            updateCharCount();
+            
+            // Trigger translation if auto-translate is on
+            if (autoTranslate.checked && sourceText.value.trim()) {
+                clearTimeout(translationTimeout);
+                translationTimeout = setTimeout(translateText, 1000);
+            }
+        });
+        
+        // Initialize
+        updateCharCount();
+        renderHistory();
+    </script>
+</body>
+</html>
